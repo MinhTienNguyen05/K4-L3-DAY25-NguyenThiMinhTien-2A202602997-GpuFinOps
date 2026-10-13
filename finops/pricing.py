@@ -5,6 +5,8 @@ live prices as fast-moving (re-baseline before each cohort).
 """
 from __future__ import annotations
 
+from numpy import ceil
+
 
 def request_cost(
     input_tok: int,
@@ -102,3 +104,56 @@ def spot_checkpoint_cost(
         "on_demand_cost": round(on_demand_cost, 2),
         "savings_pct": round(savings_pct, 1),
     }
+
+
+def cache_is_worth_it(
+    prompt_tokens: int,
+    read_count: int,
+    storage_hours: float = 1.0,
+    price_full_input_per_m: float = 2.50,   # $2.50 / 1M input tokens
+    price_cache_read_per_m: float = 0.25,   # $0.25 / 1M cache read tokens
+    price_cache_write_per_m: float = 3.00,  # $3.00 / 1M cache write tokens
+    price_storage_per_m_hour: float = 0.00   # Chi phí lưu trữ theo giờ nếu có
+) -> dict:
+    """
+    Tính toán hiệu quả kinh tế của Prompt Caching.
+    """
+    # Chi phí nếu không dùng Cache (đọc full input R lần)
+    cost_without_cache = read_count * (prompt_tokens / 1_000_000) * price_full_input_per_m
+
+    # Chi phí khi dùng Cache (1 lần ghi + R lần đọc + chi phí lưu trữ)
+    write_cost = (prompt_tokens / 1_000_000) * price_cache_write_per_m
+    read_cost = read_count * (prompt_tokens / 1_000_000) * price_cache_read_per_m
+    storage_cost = (prompt_tokens / 1_000_000) * storage_hours * price_storage_per_m_hour
+
+    total_cached_cost = write_cost + read_cost + storage_cost
+    net_savings = cost_without_cache - total_cached_cost
+
+    # Điểm hòa vốn tối thiểu về số lần đọc
+    savings_per_read = (prompt_tokens / 1_000_000) * (price_full_input_per_m - price_cache_read_per_m)
+    breakeven_reads = (write_cost + storage_cost) / savings_per_read if savings_per_read > 0 else float('inf')
+
+    return {
+        "is_worth_it": net_savings > 0,
+        "net_savings_usd": round(net_savings, 4),
+        "cost_without_cache_usd": round(cost_without_cache, 4),
+        "cost_with_cache_usd": round(total_cached_cost, 4),
+        "breakeven_reads_required": ceil(breakeven_reads),
+        "actual_reads": read_count
+    }
+
+
+if __name__ == "__main__":
+    import json
+
+    # Kịch bản 1: Chỉ đọc 1 lần (Chưa đạt ngưỡng hòa vốn)
+    res_1 = cache_is_worth_it(prompt_tokens=2_400_000, read_count=1)
+    res_1["breakeven_reads_required"] = int(res_1["breakeven_reads_required"]) # Convert numpy int to standard int
+    print("\n--- [Test Case 1: Read Count = 1] ---")
+    print(json.dumps(res_1, indent=2))
+
+    # Kịch bản 2: Đọc 2 lần (Đã vượt ngưỡng hòa vốn & sinh lời)
+    res_2 = cache_is_worth_it(prompt_tokens=2_400_000, read_count=2)
+    res_2["breakeven_reads_required"] = int(res_2["breakeven_reads_required"])
+    print("\n--- [Test Case 2: Read Count = 2] ---")
+    print(json.dumps(res_2, indent=2))
